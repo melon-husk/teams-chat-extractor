@@ -32,6 +32,7 @@ node script.js --token="<your-access-token>"
 
 - **Retries**: Transient failures (`429`, `503`, and network errors) are retried with backoff, honoring the `Retry-After` header when present, up to 8 attempts.
 - **No silent data loss**: If a chat's messages can't be fully paginated even after retries, whatever was fetched is still saved — but as `chat_<id>.partial.json` instead of `chat_<id>.json`, so a `.json` file always means "fully downloaded."
+- **Ctrl+C safe**: Pressing Ctrl+C (`SIGINT`) flushes whatever messages have been fetched for the chat currently in progress (saved as `.partial.json`), and records that chat plus every chat not yet started in `failures.json` — so a `--retry` picks up right where you stopped.
 - **Resumable**: Any chat that ends up incomplete has its full chat ID (not just the truncated filename prefix) recorded in `<out>/failures.json`. Run the script again with `--retry` to re-fetch only those chats:
 
   ```bash
@@ -50,3 +51,28 @@ node script.js --token="<your-access-token>"
 
 - No OAuth flow — you must supply your own bearer token (e.g. via [Graph Explorer](https://developer.microsoft.com/en-us/graph/graph-explorer) or your own app registration).
 - Only fetches the token owner's own chats (`/me/chats`), not tenant-wide chat data.
+
+## Loading into Neo4j
+
+`load-neo4j.js` reads every `<out>/chat_*.json` file and loads it into a Neo4j database as a graph:
+
+- `(:Person)-[:SENT]->(:Message)-[:IN_CHAT]->(:Chat)`
+- `(:Message)-[:REPLY_TO]->(:Message)`
+- `(:Message)-[:MENTIONS]->(:Person)`
+- `(:Person)-[:REACTED {type, at}]->(:Message)`
+- `(:Message)-[:HAS_ATTACHMENT]->(:Attachment)`
+
+### Setup
+
+```bash
+npm install
+cp .env.example .env   # then fill in your Neo4j Aura URI/username/password
+```
+
+### Run
+
+```bash
+node load-neo4j.js --dir=./data
+```
+
+Credentials are read from `.env` (`NEO4J_URI`, `NEO4J_USERNAME`, `NEO4J_PASSWORD`, `NEO4J_DATABASE`) or can be passed as `--uri`/`--user`/`--password`/`--database` flags instead. The load is idempotent (uses `MERGE`), so re-running it after fetching more chats just adds/updates data rather than duplicating it. `.env` and `data/` are gitignored — never commit them.

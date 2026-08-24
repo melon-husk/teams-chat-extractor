@@ -1,0 +1,12 @@
+{
+  "name": "teams-chat-extractor",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "extract": "node script.js",
+    "load-neo4j": "node load-neo4j.js"
+  },
+  "dependencies": {
+    "neo4j-driver": "^5.24.0"
+  }
+}

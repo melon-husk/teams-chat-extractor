@@ -70,6 +70,20 @@ function writeFailures(failuresFile, failures) {
   fs.writeFileSync(failuresFile, JSON.stringify(failures, null, 2), 'utf-8');
 }
 
+// Incomplete downloads get a distinct filename so a `chat_*.json` file always means
+// "fully downloaded" and fetched-but-truncated data is never mistaken for complete.
+function saveChatFile(location, chatId, msgs, complete) {
+  const chatFile = path.join(location, complete
+    ? `chat_${chatId.slice(0, 6)}.json`
+    : `chat_${chatId.slice(0, 6)}.partial.json`);
+  try {
+    fs.writeFileSync(chatFile, JSON.stringify(msgs, null, 2), 'utf-8');
+    console.log(`Saved ${msgs.length} messages to ${chatFile}`);
+  } catch (e) {
+    console.error(`Error saving chat file ${chatFile}: ${e.message}`);
+  }
+}
+
 async function downloadTeamsChats({ token, location, startDate, endDate, baseUrl, chatsOverride }) {
   const headers = { Authorization: `Bearer ${token}` };
   const failuresFile = path.join(location, 'failures.json');
@@ -97,11 +111,49 @@ async function downloadTeamsChats({ token, location, startDate, endDate, baseUrl
     console.log(`Total number of chats found: ${chats.length}`);
   }
 
+  const startDt = startDate ? new Date(startDate) : null;
+  const endDt = endDate ? new Date(endDate) : null;
+  function applyFilter(msgs) {
+    if (!startDt && !endDt) return msgs;
+    return msgs.filter((msg) => {
+      const msgDt = msg.createdDateTime ? new Date(msg.createdDateTime) : null;
+      if (startDt && msgDt && msgDt < startDt) return false;
+      if (endDt && msgDt && msgDt > endDt) return false;
+      return true;
+    });
+  }
+
   const failures = [];
+  // Tracks the chat currently being fetched so a Ctrl+C can flush what's been
+  // downloaded so far instead of losing it.
+  const current = { chatId: null, msgs: [] };
+  let interrupted = false;
+
+  const onSigint = () => {
+    if (interrupted) return;
+    interrupted = true;
+    console.warn('\nSIGINT received — flushing in-progress chat before exit...');
+
+    if (current.chatId) {
+      saveChatFile(location, current.chatId, applyFilter(current.msgs), false);
+      failures.push({ id: current.chatId, error: 'Interrupted by SIGINT', messagesFetched: current.msgs.length });
+
+      const idx = chats.findIndex((c) => c.id === current.chatId);
+      for (const c of chats.slice(idx + 1)) {
+        failures.push({ id: c.id, error: 'Not attempted (interrupted)', messagesFetched: 0 });
+      }
+    }
+
+    writeFailures(failuresFile, failures);
+    console.warn(`Progress saved. ${failures.length} chat(s) recorded in ${failuresFile} — run with --retry to resume.`);
+    process.exit(130);
+  };
+  process.on('SIGINT', onSigint);
 
   for (const chat of chats) {
     const chatId = chat.id;
-    let allMsgs = [];
+    current.chatId = chatId;
+    current.msgs = [];
     let complete = true;
     let lastError = null;
 
@@ -119,7 +171,7 @@ async function downloadTeamsChats({ token, location, startDate, endDate, baseUrl
         }
         const pageMsgs = Array.isArray(resp.json?.value) ? resp.json.value : [];
         console.log(`Number of messages in page for chat ${chatId}: ${pageMsgs.length}`);
-        allMsgs = allMsgs.concat(pageMsgs);
+        current.msgs = current.msgs.concat(pageMsgs);
         msgsNextUrl = resp.json?.['@odata.nextLink'] || null;
       }
     } catch (e) {
@@ -127,39 +179,19 @@ async function downloadTeamsChats({ token, location, startDate, endDate, baseUrl
       complete = false;
       lastError = e.message;
     }
-    console.log(`Total number of messages fetched for chat ${chatId}: ${allMsgs.length}${complete ? '' : ' (incomplete)'}`);
+    console.log(`Total number of messages fetched for chat ${chatId}: ${current.msgs.length}${complete ? '' : ' (incomplete)'}`);
 
-    let filteredMsgs;
-    if (!startDate && !endDate) {
-      filteredMsgs = allMsgs;
-    } else {
-      const startDt = startDate ? new Date(startDate) : null;
-      const endDt = endDate ? new Date(endDate) : null;
-      filteredMsgs = allMsgs.filter((msg) => {
-        const msgDt = msg.createdDateTime ? new Date(msg.createdDateTime) : null;
-        if (startDt && msgDt && msgDt < startDt) return false;
-        if (endDt && msgDt && msgDt > endDt) return false;
-        return true;
-      });
-    }
-
-    // Incomplete downloads get a distinct filename so a `chat_*.json` file always means
-    // "fully downloaded" and fetched-but-truncated data is never mistaken for complete.
-    const chatFile = path.join(location, complete
-      ? `chat_${chatId.slice(0, 6)}.json`
-      : `chat_${chatId.slice(0, 6)}.partial.json`);
-    try {
-      fs.writeFileSync(chatFile, JSON.stringify(filteredMsgs, null, 2), 'utf-8');
-      console.log(`Saved ${filteredMsgs.length} messages to ${chatFile}`);
-    } catch (e) {
-      console.error(`Error saving chat file ${chatFile}: ${e.message}`);
-    }
+    const filteredMsgs = applyFilter(current.msgs);
+    saveChatFile(location, chatId, filteredMsgs, complete);
 
     if (!complete) {
-      failures.push({ id: chatId, error: lastError, messagesFetched: allMsgs.length });
+      failures.push({ id: chatId, error: lastError, messagesFetched: current.msgs.length });
       console.warn(`Chat ${chatId} was NOT fully downloaded.`);
     }
   }
+
+  current.chatId = null;
+  process.removeListener('SIGINT', onSigint);
 
   writeFailures(failuresFile, failures);
 
