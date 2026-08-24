@@ -1,7 +1,6 @@
 # Teams Chat Extractor (Node script)
 
-A dependency-free Node.js CLI that exports your Microsoft Teams chat history to local JSON files via the Microsoft Graph API. This is a Node port of the Python/Tkinter version at [Teams-chat-extractor](https://github.com/ujwal5555/Teams-chat-extractor) (adjust the link if the repo lives elsewhere).
-
+A dependency-free Node.js CLI that exports your Microsoft Teams chat history to local JSON files via the Microsoft Graph API. 
 Requires **Node 18+** (uses the built-in `fetch`).
 
 ## Usage
